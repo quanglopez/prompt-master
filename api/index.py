@@ -21,7 +21,7 @@ app.add_middleware(
 # Use OpenRouter with OpenAI-compatible SDK
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ.get("OPENROUTER_API_KEY"),
+    api_key=os.environ.get("OPENROUTER_API_KEY", "sk-placeholder"),
 )
 
 # ===== USAGE TRACKING (in-memory, resets on server restart) =====
@@ -140,6 +140,12 @@ async def enhance_prompt(req: EnhanceRequest):
 
     async def generate():
         try:
+            # Check if API key is configured
+            api_key = os.environ.get("OPENROUTER_API_KEY")
+            if not api_key:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Server chưa cấu hình API key. Vui lòng liên hệ admin.'})}\n\n"
+                return
+
             stream = client.chat.completions.create(
                 model=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4-20250514"),
                 messages=[
@@ -156,6 +162,8 @@ async def enhance_prompt(req: EnhanceRequest):
 
             full_text = ""
             for chunk in stream:
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta
                 if delta.content:
                     full_text += delta.content
