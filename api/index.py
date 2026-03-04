@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Prompt Master API — FastAPI backend for prompt enhancement via Claude."""
+"""Prompt Master API — FastAPI backend for prompt enhancement via OpenRouter."""
 
 import json
-import asyncio
-from datetime import date, datetime
-from collections import defaultdict
-from fastapi import FastAPI, Request
+from datetime import date
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from anthropic import Anthropic
+import os
+from openai import OpenAI
 
 app = FastAPI()
 app.add_middleware(
@@ -19,11 +18,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = Anthropic()
+# Use OpenRouter with OpenAI-compatible SDK
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ.get("OPENROUTER_API_KEY"),
+)
 
 # ===== USAGE TRACKING (in-memory, resets on server restart) =====
 # Key: (user_id, date_str) -> count
-usage_tracker: dict[tuple[str, str], int] = {}
+usage_tracker: dict = {}
 
 PLAN_LIMITS = {
     "free": 3,
@@ -71,7 +74,7 @@ RULES_MAP = {
 }
 
 
-def build_system_prompt(prompt_type: str, creativity: str, rules: list[str]) -> str:
+def build_system_prompt(prompt_type: str, creativity: str, rules: list) -> str:
     type_instruction = PROMPT_TYPE_INSTRUCTIONS.get(prompt_type, PROMPT_TYPE_INSTRUCTIONS["auto"])
     creativity_instruction = CREATIVITY_INSTRUCTIONS.get(creativity, CREATIVITY_INSTRUCTIONS["balanced"])
 
@@ -117,7 +120,7 @@ class EnhanceRequest(BaseModel):
     prompt: str
     type: str = "auto"
     creativity: str = "balanced"
-    rules: list[str] = []
+    rules: list = []
     user_id: str = "anonymous"
     plan: str = "free"
 
@@ -137,35 +140,40 @@ async def enhance_prompt(req: EnhanceRequest):
 
     async def generate():
         try:
-            with client.messages.stream(
-                model="claude_sonnet_4_6",
-                max_tokens=2048,
-                system=system_prompt,
+            stream = client.chat.completions.create(
+                model=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4-20250514"),
                 messages=[
-                    {
-                        "role": "user",
-                        "content": f"Hãy tối ưu hóa prompt sau:\n\n{req.prompt}",
-                    }
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Hãy tối ưu hóa prompt sau:\n\n{req.prompt}"},
                 ],
-            ) as stream:
-                full_text = ""
-                for text in stream.text_stream:
-                    full_text += text
-                    yield f"data: {json.dumps({'type': 'chunk', 'content': text})}\n\n"
+                max_tokens=2048,
+                stream=True,
+                extra_headers={
+                    "HTTP-Referer": "https://promptmaster.sbs",
+                    "X-Title": "Prompt Master",
+                },
+            )
 
-                # Increment usage on success
-                new_usage = increment_usage(req.user_id)
+            full_text = ""
+            for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    full_text += delta.content
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': delta.content})}\n\n"
 
-                # Try to parse the full response as JSON
-                try:
-                    json_str = full_text.strip()
-                    if json_str.startswith("```"):
-                        json_str = json_str.split("\n", 1)[1]
-                        json_str = json_str.rsplit("```", 1)[0]
-                    parsed = json.loads(json_str)
-                    yield f"data: {json.dumps({'type': 'done', 'enhanced': parsed.get('enhanced', full_text), 'tips': parsed.get('tips', []), 'usage': new_usage})}\n\n"
-                except (json.JSONDecodeError, Exception):
-                    yield f"data: {json.dumps({'type': 'done', 'enhanced': full_text, 'tips': [], 'usage': new_usage})}\n\n"
+            # Increment usage on success
+            new_usage = increment_usage(req.user_id)
+
+            # Try to parse the full response as JSON
+            try:
+                json_str = full_text.strip()
+                if json_str.startswith("```"):
+                    json_str = json_str.split("\n", 1)[1]
+                    json_str = json_str.rsplit("```", 1)[0]
+                parsed = json.loads(json_str)
+                yield f"data: {json.dumps({'type': 'done', 'enhanced': parsed.get('enhanced', full_text), 'tips': parsed.get('tips', []), 'usage': new_usage})}\n\n"
+            except (json.JSONDecodeError, Exception):
+                yield f"data: {json.dumps({'type': 'done', 'enhanced': full_text, 'tips': [], 'usage': new_usage})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -177,6 +185,8 @@ async def enhance_prompt(req: EnhanceRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-Content-Type-Options": "nosniff",
+            "Access-Control-Allow-Origin": "*",
         },
     )
 

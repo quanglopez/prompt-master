@@ -3,7 +3,7 @@
 (function() {
   'use strict';
 
-  const API = 'port/8000';
+  const API = '';
 
   // ===== PLAN CONFIG =====
   const PLAN_CONFIG = {
