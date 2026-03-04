@@ -7,8 +7,8 @@
 
   // ===== PLAN CONFIG =====
   const PLAN_CONFIG = {
-    free:    { name: 'Miễn phí',   badge: '🆓', limit: 3,        color: 'default' },
-    student: { name: 'Sinh viên',  badge: '🎓', limit: 30,       color: 'student' },
+    free:    { name: 'Miễn phí',   badge: '🆓', limit: 10,       color: 'default' },
+    student: { name: 'Sinh viên',  badge: '🎓', limit: 50,       color: 'student' },
     pro:     { name: 'Pro',        badge: '🚀', limit: Infinity,  color: 'pro' },
     yearly:  { name: 'Pro Năm',    badge: '💎', limit: Infinity,  color: 'yearly' },
   };
@@ -63,7 +63,7 @@
   }
 
   function getLimit() {
-    return PLAN_CONFIG[currentPlan]?.limit || 3;
+    return PLAN_CONFIG[currentPlan]?.limit || 10;
   }
 
   function canUse() {

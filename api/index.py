@@ -29,8 +29,8 @@ client = OpenAI(
 usage_tracker: dict = {}
 
 PLAN_LIMITS = {
-    "free": 3,
-    "student": 30,
+    "free": 10,
+    "student": 50,
     "pro": 999999,
     "yearly": 999999,
 }
@@ -129,7 +129,7 @@ class EnhanceRequest(BaseModel):
 async def enhance_prompt(req: EnhanceRequest):
     # Check usage limit
     current_usage = get_usage(req.user_id)
-    limit = PLAN_LIMITS.get(req.plan, 3)
+    limit = PLAN_LIMITS.get(req.plan, 10)
 
     if current_usage >= limit:
         async def limit_error():
