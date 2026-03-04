@@ -3,6 +3,8 @@
 
 import json
 import asyncio
+from datetime import date, datetime
+from collections import defaultdict
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -18,6 +20,30 @@ app.add_middleware(
 )
 
 client = Anthropic()
+
+# ===== USAGE TRACKING (in-memory, resets on server restart) =====
+# Key: (user_id, date_str) -> count
+usage_tracker: dict[tuple[str, str], int] = {}
+
+PLAN_LIMITS = {
+    "free": 3,
+    "student": 30,
+    "pro": 999999,
+    "yearly": 999999,
+}
+
+def get_usage(user_id: str) -> int:
+    """Get today's usage for a user."""
+    today = date.today().isoformat()
+    return usage_tracker.get((user_id, today), 0)
+
+def increment_usage(user_id: str) -> int:
+    """Increment and return today's usage for a user."""
+    today = date.today().isoformat()
+    key = (user_id, today)
+    usage_tracker[key] = usage_tracker.get(key, 0) + 1
+    return usage_tracker[key]
+
 
 PROMPT_TYPE_INSTRUCTIONS = {
     "auto": "Tự động phát hiện loại prompt và tối ưu hóa phù hợp.",
@@ -92,10 +118,21 @@ class EnhanceRequest(BaseModel):
     type: str = "auto"
     creativity: str = "balanced"
     rules: list[str] = []
+    user_id: str = "anonymous"
+    plan: str = "free"
 
 
 @app.post("/api/enhance")
 async def enhance_prompt(req: EnhanceRequest):
+    # Check usage limit
+    current_usage = get_usage(req.user_id)
+    limit = PLAN_LIMITS.get(req.plan, 3)
+
+    if current_usage >= limit:
+        async def limit_error():
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Bạn đã dùng hết {limit} lượt hôm nay. Vui lòng nâng cấp gói hoặc thử lại ngày mai.'})}\n\n"
+        return StreamingResponse(limit_error(), media_type="text/event-stream")
+
     system_prompt = build_system_prompt(req.type, req.creativity, req.rules)
 
     async def generate():
@@ -116,18 +153,19 @@ async def enhance_prompt(req: EnhanceRequest):
                     full_text += text
                     yield f"data: {json.dumps({'type': 'chunk', 'content': text})}\n\n"
 
+                # Increment usage on success
+                new_usage = increment_usage(req.user_id)
+
                 # Try to parse the full response as JSON
                 try:
-                    # Try to extract JSON from the response
                     json_str = full_text.strip()
-                    # Remove potential markdown code blocks
                     if json_str.startswith("```"):
                         json_str = json_str.split("\n", 1)[1]
                         json_str = json_str.rsplit("```", 1)[0]
                     parsed = json.loads(json_str)
-                    yield f"data: {json.dumps({'type': 'done', 'enhanced': parsed.get('enhanced', full_text), 'tips': parsed.get('tips', [])})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'enhanced': parsed.get('enhanced', full_text), 'tips': parsed.get('tips', []), 'usage': new_usage})}\n\n"
                 except (json.JSONDecodeError, Exception):
-                    yield f"data: {json.dumps({'type': 'done', 'enhanced': full_text, 'tips': []})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'enhanced': full_text, 'tips': [], 'usage': new_usage})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -141,6 +179,12 @@ async def enhance_prompt(req: EnhanceRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/usage/{user_id}")
+def get_user_usage(user_id: str):
+    """Get today's usage for a user."""
+    return {"usage": get_usage(user_id), "date": date.today().isoformat()}
 
 
 @app.get("/api/health")

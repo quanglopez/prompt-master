@@ -5,6 +5,14 @@
 
   const API = 'port/8000';
 
+  // ===== PLAN CONFIG =====
+  const PLAN_CONFIG = {
+    free:    { name: 'Miễn phí',   badge: '🆓', limit: 3,        color: 'default' },
+    student: { name: 'Sinh viên',  badge: '🎓', limit: 30,       color: 'student' },
+    pro:     { name: 'Pro',        badge: '🚀', limit: Infinity,  color: 'pro' },
+    yearly:  { name: 'Pro Năm',    badge: '💎', limit: Infinity,  color: 'yearly' },
+  };
+
   // ===== STATE =====
   let currentTheme = 'light';
   let selectedCreativity = 'balanced';
@@ -12,6 +20,55 @@
   let history = [];
   let isStreaming = false;
   let currentCategory = 'all';
+  let currentPlan = 'free';
+  let usageToday = 0;
+  let planExpires = null;
+
+  // ===== USAGE TRACKING (in-memory + backend sync) =====
+  const usageStore = {};
+
+  function getUsageKey() {
+    const user = window.Clerk?.user;
+    const userId = user ? user.id : 'anonymous';
+    const today = new Date().toISOString().slice(0, 10);
+    return `${userId}_${today}`;
+  }
+
+  function loadUsage() {
+    const key = getUsageKey();
+    usageToday = usageStore[key] || 0;
+  }
+
+  async function syncUsageFromBackend() {
+    const userId = window.Clerk?.user?.id || 'anonymous';
+    try {
+      const resp = await fetch(`${API}/api/usage/${userId}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        usageToday = data.usage || 0;
+        const key = getUsageKey();
+        usageStore[key] = usageToday;
+        updateUsageUI();
+      }
+    } catch (e) {
+      // Silently fail, use in-memory count
+    }
+  }
+
+  function incrementUsage() {
+    usageToday++;
+    const key = getUsageKey();
+    usageStore[key] = usageToday;
+    updateUsageUI();
+  }
+
+  function getLimit() {
+    return PLAN_CONFIG[currentPlan]?.limit || 3;
+  }
+
+  function canUse() {
+    return usageToday < getLimit();
+  }
 
   // ===== DOM REFS =====
   const $ = (sel) => document.querySelector(sel);
@@ -154,10 +211,108 @@
     sendBtn.disabled = !hasText || isStreaming;
   }
 
+  // ===== USAGE UI =====
+  function updateUsageUI() {
+    const usageBar = $('#usageBar');
+    const usageText = $('#usageText');
+    const usageFill = $('#usageFill');
+    if (!usageBar) return;
+
+    const limit = getLimit();
+    const isUnlimited = limit === Infinity;
+
+    if (isUnlimited) {
+      usageText.textContent = `${usageToday} lượt hôm nay — Không giới hạn`;
+      usageFill.style.width = '100%';
+      usageFill.classList.remove('usage-warning', 'usage-danger');
+      usageFill.classList.add('usage-unlimited');
+    } else {
+      const remaining = Math.max(0, limit - usageToday);
+      usageText.textContent = `${usageToday}/${limit} lượt hôm nay`;
+      const pct = Math.min(100, (usageToday / limit) * 100);
+      usageFill.style.width = pct + '%';
+      usageFill.classList.remove('usage-unlimited', 'usage-warning', 'usage-danger');
+      if (pct >= 100) {
+        usageFill.classList.add('usage-danger');
+      } else if (pct >= 70) {
+        usageFill.classList.add('usage-warning');
+      }
+    }
+  }
+
+  function updatePlanBadge() {
+    const planBadge = $('#planBadge');
+    const planBadgeName = $('#planBadgeName');
+    const planExpireText = $('#planExpireText');
+    if (!planBadge) return;
+
+    const config = PLAN_CONFIG[currentPlan] || PLAN_CONFIG.free;
+    planBadge.className = 'plan-badge plan-badge-' + config.color;
+    planBadgeName.textContent = config.badge + ' ' + config.name;
+
+    if (planExpires && currentPlan !== 'free') {
+      const expDate = new Date(planExpires);
+      const now = new Date();
+      const diffDays = Math.ceil((expDate - now) / (1000 * 60 * 60 * 24));
+
+      if (diffDays <= 0) {
+        planExpireText.textContent = 'Đã hết hạn';
+        planExpireText.classList.add('expired');
+        // Reset to free
+        currentPlan = 'free';
+        planBadge.className = 'plan-badge plan-badge-default';
+        planBadgeName.textContent = PLAN_CONFIG.free.badge + ' ' + PLAN_CONFIG.free.name;
+        planExpireText.textContent = '';
+      } else if (diffDays <= 7) {
+        planExpireText.textContent = `Còn ${diffDays} ngày`;
+        planExpireText.classList.add('expiring-soon');
+      } else {
+        planExpireText.textContent = `HSD: ${expDate.toLocaleDateString('vi-VN')}`;
+        planExpireText.classList.remove('expired', 'expiring-soon');
+      }
+    } else {
+      planExpireText.textContent = '';
+      planExpireText.classList.remove('expired', 'expiring-soon');
+    }
+  }
+
   // ===== ENHANCE PROMPT =====
   async function enhancePrompt() {
     const prompt = promptInput.value.trim();
     if (!prompt || isStreaming) return;
+
+    // Check usage limit
+    if (!canUse()) {
+      const limit = getLimit();
+      const planName = PLAN_CONFIG[currentPlan]?.name || 'Miễn phí';
+
+      // Show limit reached message
+      heroSection.classList.add('has-output');
+      heroTitle.style.display = 'none';
+      heroSubtitle.style.display = 'none';
+      outputSection.style.display = 'block';
+      skeletonLoader.style.display = 'none';
+      outputTips.style.display = 'none';
+
+      if (currentPlan === 'free') {
+        outputBody.innerHTML = `<div class="limit-reached">
+          <div class="limit-reached-icon">⚡</div>
+          <div class="limit-reached-title">Hết lượt miễn phí hôm nay</div>
+          <div class="limit-reached-desc">Bạn đã dùng hết ${limit} lượt miễn phí trong ngày. Nâng cấp để có thêm lượt sử dụng.</div>
+          <button class="limit-reached-btn" onclick="document.querySelector('#pricingSection').scrollIntoView({behavior:'smooth'})">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            Xem bảng giá
+          </button>
+        </div>`;
+      } else {
+        outputBody.innerHTML = `<div class="limit-reached">
+          <div class="limit-reached-icon">⏳</div>
+          <div class="limit-reached-title">Hết lượt hôm nay</div>
+          <div class="limit-reached-desc">Bạn đã dùng hết ${limit} lượt của gói ${planName}. Lượt sẽ được reset vào 0:00 ngày mai.</div>
+        </div>`;
+      }
+      return;
+    }
 
     isStreaming = true;
     updateSendButton();
@@ -186,6 +341,8 @@
           type: promptType.value,
           creativity: selectedCreativity,
           rules: activeRules,
+          user_id: window.Clerk?.user?.id || 'anonymous',
+          plan: currentPlan,
         }),
       });
 
@@ -236,8 +393,9 @@
                 ).join('');
               }
 
-              // Add to history
+              // Add to history & increment usage
               addToHistory(prompt, data.enhanced || fullText);
+              incrementUsage();
             } else if (data.type === 'error') {
               outputBody.textContent = '❌ Lỗi: ' + data.message;
             }
@@ -248,12 +406,10 @@
 
         // Show streaming text (raw, will be replaced by parsed on done)
         if (fullText && !outputBody.textContent) {
-          // Try to show just the enhanced part if JSON is being built
           try {
             const partial = JSON.parse(fullText);
             outputBody.textContent = partial.enhanced || fullText;
           } catch {
-            // Show raw for now, it's streaming
             outputBody.textContent = fullText;
           }
         }
@@ -274,9 +430,11 @@
             ).join('');
           }
           addToHistory(prompt, parsed.enhanced || fullText);
+          incrementUsage();
         } catch {
           outputBody.textContent = fullText;
           addToHistory(prompt, fullText);
+          incrementUsage();
         }
       }
 
@@ -473,6 +631,11 @@
     // Pricing buttons
     $$('.pricing-btn-primary[data-plan]').forEach(btn => {
       btn.addEventListener('click', () => {
+        // Check if user is logged in first
+        if (!window.Clerk?.user) {
+          window.Clerk?.openSignIn();
+          return;
+        }
         const plan = btn.dataset.plan;
         const price = parseInt(btn.dataset.price);
         openPaymentModal(plan, price);
@@ -514,6 +677,138 @@
     }
   }
 
+  // ===== CLERK AUTH =====
+  async function initClerk() {
+    // Wait for Clerk to be available
+    if (typeof window.Clerk === 'undefined') {
+      await new Promise((resolve) => {
+        const check = setInterval(() => {
+          if (typeof window.Clerk !== 'undefined') {
+            clearInterval(check);
+            resolve();
+          }
+        }, 100);
+        setTimeout(() => { clearInterval(check); resolve(); }, 10000);
+      });
+    }
+
+    if (typeof window.Clerk === 'undefined') {
+      console.warn('Clerk SDK not loaded');
+      loadUsage();
+      updateUsageUI();
+      updatePlanBadge();
+      return;
+    }
+
+    try {
+      await window.Clerk.load({
+        localization: {
+          locale: 'vi-VN',
+        },
+      });
+    } catch (e) {
+      console.warn('Clerk load error:', e);
+      loadUsage();
+      updateUsageUI();
+      updatePlanBadge();
+      return;
+    }
+
+    const authLoggedOut = $('#authLoggedOut');
+    const authLoggedIn = $('#authLoggedIn');
+    const authAvatar = $('#authAvatar');
+    const authUserName = $('#authUserName');
+    const authUserEmail = $('#authUserEmail');
+    const authLoginBtn = $('#authLoginBtn');
+    const authSignupBtn = $('#authSignupBtn');
+    const authLogoutBtn = $('#authLogoutBtn');
+    const mobileAuthBtn = $('#mobileAuthBtn');
+
+    function updateAuthUI() {
+      const user = window.Clerk.user;
+      if (user) {
+        // Logged in
+        authLoggedOut.style.display = 'none';
+        authLoggedIn.style.display = 'flex';
+        authAvatar.src = user.imageUrl || '';
+        authUserName.textContent = user.fullName || user.firstName || 'Người dùng';
+        authUserEmail.textContent = user.primaryEmailAddress?.emailAddress || '';
+
+        // Mobile button - show avatar
+        mobileAuthBtn.classList.add('logged-in');
+        mobileAuthBtn.innerHTML = `<img src="${user.imageUrl || ''}" alt="Avatar" width="36" height="36">`;
+
+        // Read plan from public metadata
+        const meta = user.publicMetadata || {};
+        currentPlan = meta.plan || 'free';
+        planExpires = meta.expires || null;
+
+        // Validate expiration
+        if (planExpires && currentPlan !== 'free') {
+          const expDate = new Date(planExpires);
+          if (expDate < new Date()) {
+            currentPlan = 'free';
+            planExpires = null;
+          }
+        }
+      } else {
+        // Logged out
+        authLoggedOut.style.display = 'flex';
+        authLoggedIn.style.display = 'none';
+        currentPlan = 'free';
+        planExpires = null;
+
+        // Mobile button - show icon
+        mobileAuthBtn.classList.remove('logged-in');
+        mobileAuthBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
+      }
+
+      // Update membership UI
+      loadUsage();
+      updateUsageUI();
+      updatePlanBadge();
+      syncUsageFromBackend();
+    }
+
+    // Listen for auth state changes
+    window.Clerk.addListener(updateAuthUI);
+
+    // Initial UI update
+    updateAuthUI();
+
+    // Login button
+    if (authLoginBtn) {
+      authLoginBtn.addEventListener('click', () => {
+        window.Clerk.openSignIn();
+      });
+    }
+
+    // Signup button
+    if (authSignupBtn) {
+      authSignupBtn.addEventListener('click', () => {
+        window.Clerk.openSignUp();
+      });
+    }
+
+    // Logout button
+    if (authLogoutBtn) {
+      authLogoutBtn.addEventListener('click', async () => {
+        await window.Clerk.signOut();
+      });
+    }
+
+    // Mobile auth button
+    if (mobileAuthBtn) {
+      mobileAuthBtn.addEventListener('click', () => {
+        if (window.Clerk.user) {
+          window.Clerk.openUserProfile();
+        } else {
+          window.Clerk.openSignIn();
+        }
+      });
+    }
+  }
+
   // ===== INIT =====
   function init() {
     initTheme();
@@ -523,6 +818,7 @@
     renderTemplates('all');
     renderHistory();
     initPricing();
+    initClerk();
 
     // Event listeners
     promptInput.addEventListener('input', () => {
