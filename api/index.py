@@ -116,8 +116,57 @@ QUAN TRỌNG:
 - Chỉ trả về JSON, không thêm text nào khác"""
 
 
+def build_refinement_system_prompt(prompt_type: str, creativity: str, rules: list) -> str:
+    type_instruction = PROMPT_TYPE_INSTRUCTIONS.get(prompt_type, PROMPT_TYPE_INSTRUCTIONS["auto"])
+    creativity_instruction = CREATIVITY_INSTRUCTIONS.get(creativity, CREATIVITY_INSTRUCTIONS["balanced"])
+
+    rules_text = ""
+    if rules:
+        active_rules = [RULES_MAP[r] for r in rules if r in RULES_MAP]
+        if active_rules:
+            rules_text = "\n\nCÁC QUY TẮC BẮT BUỘC ÁP DỤNG:\n" + "\n".join(f"- {r}" for r in active_rules)
+
+    return f"""Bạn là chuyên gia tối ưu hóa prompt AI hàng đầu. Bạn đã tối ưu hóa một prompt trước đó. Người dùng bây giờ muốn tinh chỉnh thêm. Hãy áp dụng yêu cầu chỉnh sửa của họ để cải thiện prompt đã tối ưu trong khi vẫn giữ lại những điểm mạnh của nó.
+
+LOẠI PROMPT: {type_instruction}
+
+ĐỘ SÁNG TẠO: {creativity_instruction}
+{rules_text}
+
+QUY TRÌNH LÀM VIỆC:
+1. Xem xét prompt gốc và prompt đã tối ưu hóa
+2. Hiểu rõ yêu cầu chỉnh sửa của người dùng
+3. Áp dụng chỉnh sửa vào prompt đã tối ưu, giữ lại những gì tốt và cải thiện theo yêu cầu
+4. Đưa ra 2-3 mẹo ngắn gọn liên quan đến lần tinh chỉnh này
+
+ĐỊNH DẠNG ĐẦU RA:
+Trả về đúng format JSON sau (không thêm markdown code block):
+{{
+  "enhanced": "prompt đã được tinh chỉnh ở đây",
+  "tips": ["mẹo 1", "mẹo 2", "mẹo 3"]
+}}
+
+QUAN TRỌNG:
+- Trả lời hoàn toàn bằng tiếng Việt
+- Prompt tinh chỉnh phải phản ánh đúng yêu cầu chỉnh sửa của người dùng
+- Giữ lại những điểm mạnh từ prompt đã tối ưu trước đó
+- Tips phải ngắn gọn, thực tế, áp dụng được ngay
+- Chỉ trả về JSON, không thêm text nào khác"""
+
+
 class EnhanceRequest(BaseModel):
     prompt: str
+    type: str = "auto"
+    creativity: str = "balanced"
+    rules: list = []
+    user_id: str = "anonymous"
+    plan: str = "free"
+
+
+class RefineRequest(BaseModel):
+    original_prompt: str
+    enhanced_prompt: str
+    instruction: str
     type: str = "auto"
     creativity: str = "balanced"
     rules: list = []
@@ -151,6 +200,85 @@ async def enhance_prompt(req: EnhanceRequest):
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Hãy tối ưu hóa prompt sau:\n\n{req.prompt}"},
+                ],
+                max_tokens=2048,
+                stream=True,
+                extra_headers={
+                    "HTTP-Referer": "https://promptmaster.sbs",
+                    "X-Title": "Prompt Master",
+                },
+            )
+
+            full_text = ""
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    full_text += delta.content
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': delta.content})}\n\n"
+
+            # Increment usage on success
+            new_usage = increment_usage(req.user_id)
+
+            # Try to parse the full response as JSON
+            try:
+                json_str = full_text.strip()
+                if json_str.startswith("```"):
+                    json_str = json_str.split("\n", 1)[1]
+                    json_str = json_str.rsplit("```", 1)[0]
+                parsed = json.loads(json_str)
+                yield f"data: {json.dumps({'type': 'done', 'enhanced': parsed.get('enhanced', full_text), 'tips': parsed.get('tips', []), 'usage': new_usage})}\n\n"
+            except (json.JSONDecodeError, Exception):
+                yield f"data: {json.dumps({'type': 'done', 'enhanced': full_text, 'tips': [], 'usage': new_usage})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "X-Content-Type-Options": "nosniff",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@app.post("/api/refine")
+async def refine_prompt(req: RefineRequest):
+    # Check usage limit (same as /api/enhance)
+    current_usage = get_usage(req.user_id)
+    limit = PLAN_LIMITS.get(req.plan, 10)
+
+    if current_usage >= limit:
+        async def limit_error():
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Bạn đã dùng hết {limit} lượt hôm nay. Vui lòng nâng cấp gói hoặc thử lại ngày mai.'})}\n\n"
+        return StreamingResponse(limit_error(), media_type="text/event-stream")
+
+    system_prompt = build_refinement_system_prompt(req.type, req.creativity, req.rules)
+    user_message = (
+        f"Prompt gốc: {req.original_prompt}\n\n"
+        f"Prompt đã tối ưu: {req.enhanced_prompt}\n\n"
+        f"Yêu cầu chỉnh sửa: {req.instruction}"
+    )
+
+    async def generate():
+        try:
+            # Check if API key is configured
+            api_key = os.environ.get("OPENROUTER_API_KEY")
+            if not api_key:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Server chưa cấu hình API key. Vui lòng liên hệ admin.'})}\n\n"
+                return
+
+            stream = client.chat.completions.create(
+                model=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4-20250514"),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
                 ],
                 max_tokens=2048,
                 stream=True,

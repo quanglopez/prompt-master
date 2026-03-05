@@ -24,6 +24,10 @@
   let usageToday = 0;
   let planExpires = null;
 
+  // Refinement state
+  let currentOriginalPrompt = '';
+  let currentEnhancedPrompt = '';
+
   // ===== USAGE TRACKING (in-memory + backend sync) =====
   const usageStore = {};
 
@@ -84,6 +88,7 @@
   const outputBody = $('#outputBody');
   const outputTips = $('#outputTips');
   const skeletonLoader = $('#skeletonLoader');
+  const loadingMessage = $('#loadingMessage');
   const copyBtn = $('#copyBtn');
   const copyText = $('#copyText');
   const historyList = $('#historyList');
@@ -93,6 +98,10 @@
   const sidebarOverlay = $('#sidebarOverlay');
   const discoverySection = $('#discoverySection');
   const templateGrid = $('#templateGrid');
+  const charCount = $('#charCount');
+  const refinementBar = $('#refinementBar');
+  const refinementInput = $('#refinementInput');
+  const refinementSendBtn = $('#refinementSendBtn');
 
   // ===== TEMPLATES =====
   const templates = [
@@ -276,6 +285,38 @@
     }
   }
 
+  // ===== RENDER TIPS =====
+  function renderTips(tips) {
+    if (tips && tips.length > 0) {
+      outputTips.style.display = 'flex';
+      outputTips.innerHTML = tips.map(tip =>
+        `<button class="output-tip" data-tip="${tip.replace(/"/g, '&quot;')}" type="button">
+          <svg class="output-tip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          <span>${tip}</span>
+        </button>`
+      ).join('');
+
+      // Attach click handlers for tip chips
+      outputTips.querySelectorAll('.output-tip').forEach(tipBtn => {
+        tipBtn.addEventListener('click', () => {
+          const tipText = tipBtn.dataset.tip;
+          const currentVal = promptInput.value.trim();
+          if (currentVal) {
+            promptInput.value = currentVal + '\n\n[Áp dụng gợi ý: ' + tipText + ']';
+          } else {
+            promptInput.value = '[Áp dụng gợi ý: ' + tipText + ']';
+          }
+          updateSendButton();
+          autoResize();
+          enhancePrompt();
+        });
+      });
+    } else {
+      outputTips.style.display = 'none';
+      outputTips.innerHTML = '';
+    }
+  }
+
   // ===== ENHANCE PROMPT =====
   async function enhancePrompt() {
     const prompt = promptInput.value.trim();
@@ -288,11 +329,11 @@
 
       // Show limit reached message
       heroSection.classList.add('has-output');
-      heroTitle.style.display = 'none';
-      heroSubtitle.style.display = 'none';
       outputSection.style.display = 'block';
       skeletonLoader.style.display = 'none';
+      loadingMessage.style.display = 'none';
       outputTips.style.display = 'none';
+      refinementBar.style.display = 'none';
 
       if (currentPlan === 'free') {
         outputBody.innerHTML = `<div class="limit-reached">
@@ -317,15 +358,19 @@
     isStreaming = true;
     updateSendButton();
 
+    // Show loading state on send button
+    sendBtn.classList.add('loading');
+    sendBtn.innerHTML = '<svg class="spinner-svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-width="2.5"/></svg>';
+
     // Show output section with skeleton
     heroSection.classList.add('has-output');
-    heroTitle.style.display = 'none';
-    heroSubtitle.style.display = 'none';
     outputSection.style.display = 'block';
     outputBody.textContent = '';
     outputTips.style.display = 'none';
     outputTips.innerHTML = '';
+    refinementBar.style.display = 'none';
     skeletonLoader.style.display = 'block';
+    loadingMessage.style.display = 'flex';
     copyBtn.classList.remove('copied');
     copyText.textContent = 'Sao chép';
 
@@ -353,8 +398,9 @@
       let fullText = '';
       let buffer = '';
 
-      // Hide skeleton, show body
+      // Hide skeleton & loading message, show body
       skeletonLoader.style.display = 'none';
+      loadingMessage.style.display = 'none';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -378,23 +424,21 @@
               // Use the parsed enhanced prompt if available
               if (data.enhanced) {
                 outputBody.textContent = data.enhanced;
+                currentEnhancedPrompt = data.enhanced;
               } else {
                 outputBody.textContent = fullText;
+                currentEnhancedPrompt = fullText;
               }
+              currentOriginalPrompt = prompt;
 
               // Show tips
-              if (data.tips && data.tips.length > 0) {
-                outputTips.style.display = 'flex';
-                outputTips.innerHTML = data.tips.map(tip =>
-                  `<div class="output-tip">
-                    <svg class="output-tip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                    <span>${tip}</span>
-                  </div>`
-                ).join('');
-              }
+              renderTips(data.tips);
+
+              // Show refinement bar
+              refinementBar.style.display = 'flex';
 
               // Add to history & increment usage
-              addToHistory(prompt, data.enhanced || fullText);
+              addToHistory(prompt, currentEnhancedPrompt, data.tips || []);
               incrementUsage();
             } else if (data.type === 'error') {
               outputBody.textContent = '❌ Lỗi: ' + data.message;
@@ -420,38 +464,143 @@
         try {
           const parsed = JSON.parse(fullText);
           outputBody.textContent = parsed.enhanced || fullText;
-          if (parsed.tips && parsed.tips.length > 0) {
-            outputTips.style.display = 'flex';
-            outputTips.innerHTML = parsed.tips.map(tip =>
-              `<div class="output-tip">
-                <svg class="output-tip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                <span>${tip}</span>
-              </div>`
-            ).join('');
-          }
-          addToHistory(prompt, parsed.enhanced || fullText);
+          currentEnhancedPrompt = parsed.enhanced || fullText;
+          currentOriginalPrompt = prompt;
+          renderTips(parsed.tips);
+          refinementBar.style.display = 'flex';
+          addToHistory(prompt, currentEnhancedPrompt, parsed.tips || []);
           incrementUsage();
         } catch {
           outputBody.textContent = fullText;
-          addToHistory(prompt, fullText);
+          currentEnhancedPrompt = fullText;
+          currentOriginalPrompt = prompt;
+          refinementBar.style.display = 'flex';
+          addToHistory(prompt, fullText, []);
           incrementUsage();
         }
       }
 
     } catch (error) {
       skeletonLoader.style.display = 'none';
+      loadingMessage.style.display = 'none';
       outputBody.textContent = '❌ Không thể kết nối đến server. Vui lòng thử lại sau.';
     }
 
+    // Restore send button
+    sendBtn.classList.remove('loading');
+    sendBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>';
     isStreaming = false;
     updateSendButton();
   }
 
+  // ===== REFINE PROMPT =====
+  async function refinePrompt() {
+    const instruction = refinementInput.value.trim();
+    if (!instruction || isStreaming) return;
+    if (!currentEnhancedPrompt) return;
+
+    isStreaming = true;
+    refinementSendBtn.disabled = true;
+    refinementInput.disabled = true;
+
+    // Show loading
+    skeletonLoader.style.display = 'block';
+    loadingMessage.style.display = 'flex';
+    outputBody.textContent = '';
+    outputTips.style.display = 'none';
+    outputTips.innerHTML = '';
+
+    try {
+      const response = await fetch(`${API}/api/refine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          original_prompt: currentOriginalPrompt,
+          enhanced_prompt: currentEnhancedPrompt,
+          instruction: instruction,
+          user_id: window.Clerk?.user?.id || 'anonymous',
+          plan: currentPlan,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Lỗi kết nối server');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = '';
+      let buffer = '';
+
+      skeletonLoader.style.display = 'none';
+      loadingMessage.style.display = 'none';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
+
+          try {
+            const data = JSON.parse(jsonStr);
+            if (data.type === 'chunk') {
+              fullText += data.content;
+            } else if (data.type === 'done') {
+              const refined = data.enhanced || fullText;
+              outputBody.textContent = refined;
+              currentEnhancedPrompt = refined;
+              renderTips(data.tips);
+            } else if (data.type === 'error') {
+              outputBody.textContent = '❌ Lỗi: ' + data.message;
+            }
+          } catch(e) {}
+        }
+
+        if (fullText && !outputBody.textContent) {
+          try {
+            const partial = JSON.parse(fullText);
+            outputBody.textContent = partial.enhanced || fullText;
+          } catch {
+            outputBody.textContent = fullText;
+          }
+        }
+      }
+
+      if (!outputBody.textContent && fullText) {
+        try {
+          const parsed = JSON.parse(fullText);
+          outputBody.textContent = parsed.enhanced || fullText;
+          currentEnhancedPrompt = parsed.enhanced || fullText;
+          renderTips(parsed.tips);
+        } catch {
+          outputBody.textContent = fullText;
+          currentEnhancedPrompt = fullText;
+        }
+      }
+
+    } catch (error) {
+      skeletonLoader.style.display = 'none';
+      loadingMessage.style.display = 'none';
+      outputBody.textContent = '❌ Không thể kết nối đến server. Vui lòng thử lại sau.';
+    }
+
+    refinementInput.value = '';
+    refinementSendBtn.disabled = false;
+    refinementInput.disabled = false;
+    isStreaming = false;
+  }
+
   // ===== HISTORY =====
-  function addToHistory(original, enhanced) {
+  function addToHistory(original, enhanced, tips) {
     const item = {
       original: original,
       enhanced: enhanced,
+      tips: tips || [],
       timestamp: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
     };
     history.unshift(item);
@@ -481,10 +630,16 @@
           promptInput.value = item.original;
           outputBody.textContent = item.enhanced;
           heroSection.classList.add('has-output');
-          heroTitle.style.display = 'none';
-          heroSubtitle.style.display = 'none';
           outputSection.style.display = 'block';
           skeletonLoader.style.display = 'none';
+          loadingMessage.style.display = 'none';
+          // Restore tips
+          renderTips(item.tips);
+          // Set refinement state
+          currentOriginalPrompt = item.original;
+          currentEnhancedPrompt = item.enhanced;
+          // Show refinement bar
+          refinementBar.style.display = 'flex';
           updateSendButton();
           closeSidebar();
           heroSection.scrollIntoView({ behavior: 'smooth' });
@@ -547,6 +702,7 @@
           promptInput.value = template.prompt;
           promptInput.focus();
           updateSendButton();
+          updateCharCount();
           heroSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
       });
@@ -575,10 +731,18 @@
     outputBody.textContent = '';
     outputTips.style.display = 'none';
     outputTips.innerHTML = '';
+    refinementBar.style.display = 'none';
     heroSection.classList.remove('has-output');
-    heroTitle.style.display = '';
-    heroSubtitle.style.display = '';
+    // Reset rules
+    activeRules = [];
+    document.querySelectorAll('.rule-toggle').forEach(t => {
+      t.classList.remove('active');
+      t.setAttribute('aria-pressed', 'false');
+    });
+    currentOriginalPrompt = '';
+    currentEnhancedPrompt = '';
     updateSendButton();
+    updateCharCount();
     promptInput.focus();
     closeSidebar();
   }
@@ -588,6 +752,51 @@
     promptInput.style.height = 'auto';
     const maxH = 300;
     promptInput.style.height = Math.min(promptInput.scrollHeight, maxH) + 'px';
+  }
+
+  // ===== CHARACTER COUNT =====
+  function updateCharCount() {
+    if (!charCount) return;
+    const len = promptInput.value.length;
+    charCount.textContent = len + ' ký tự';
+    if (len > 2000) {
+      charCount.classList.add('char-count-warn');
+    } else {
+      charCount.classList.remove('char-count-warn');
+    }
+  }
+
+  // ===== ROTATING PLACEHOLDERS =====
+  const placeholders = [
+    'Ví dụ: Viết cho tôi một bài blog về AI...',
+    'Ví dụ: Tạo kế hoạch marketing cho startup...',
+    'Ví dụ: Giải thích machine learning đơn giản...',
+    'Ví dụ: Viết email xin việc chuyên nghiệp...',
+    'Ví dụ: Phân tích dữ liệu bán hàng Q4...',
+    'Ví dụ: Viết prompt tạo hình ảnh Midjourney...',
+  ];
+  let placeholderIdx = 0;
+  let placeholderInterval = null;
+  let inputFocused = false;
+
+  function startPlaceholderRotation() {
+    placeholderInterval = setInterval(() => {
+      if (!inputFocused && !promptInput.value) {
+        placeholderIdx = (placeholderIdx + 1) % placeholders.length;
+        promptInput.classList.add('placeholder-fade');
+        setTimeout(() => {
+          promptInput.placeholder = placeholders[placeholderIdx];
+          promptInput.classList.remove('placeholder-fade');
+        }, 200);
+      }
+    }, 3000);
+  }
+
+  function initPlaceholders() {
+    promptInput.placeholder = placeholders[0];
+    promptInput.addEventListener('focus', () => { inputFocused = true; });
+    promptInput.addEventListener('blur', () => { inputFocused = false; });
+    startPlaceholderRotation();
   }
 
   // ===== PAYMENT MODAL =====
@@ -768,6 +977,9 @@
       updateUsageUI();
       updatePlanBadge();
       syncUsageFromBackend();
+
+      // Broadcast auth data for extension sync
+      broadcastAuthForExtension(user);
     }
 
     // Listen for auth state changes
@@ -809,6 +1021,49 @@
     }
   }
 
+  // ===== EXTENSION AUTH SYNC =====
+  function broadcastAuthForExtension(user) {
+    try {
+      const data = user ? {
+        userId: user.id,
+        fullName: user.fullName || user.firstName || '',
+        email: user.primaryEmailAddress?.emailAddress || '',
+        imageUrl: user.imageUrl || '',
+        plan: user.publicMetadata?.plan || 'free',
+        expires: user.publicMetadata?.expires || null,
+      } : null;
+
+      // Store in a hidden element for extension to read
+      let el = document.getElementById('pm-ext-auth');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'pm-ext-auth';
+        el.style.display = 'none';
+        document.body.appendChild(el);
+      }
+      el.setAttribute('data-auth', JSON.stringify(data));
+
+      // Also dispatch a custom event
+      window.dispatchEvent(new CustomEvent('pm-auth-update', { detail: data }));
+    } catch (_) {}
+  }
+
+  // Listen for extension requesting auth data
+  window.addEventListener('message', (e) => {
+    if (e.data?.type === 'PM_GET_AUTH') {
+      const user = window.Clerk?.user;
+      const data = user ? {
+        userId: user.id,
+        fullName: user.fullName || user.firstName || '',
+        email: user.primaryEmailAddress?.emailAddress || '',
+        imageUrl: user.imageUrl || '',
+        plan: user.publicMetadata?.plan || 'free',
+        expires: user.publicMetadata?.expires || null,
+      } : null;
+      window.postMessage({ type: 'PM_AUTH_DATA', data }, '*');
+    }
+  });
+
   // ===== INIT =====
   function init() {
     initTheme();
@@ -819,11 +1074,13 @@
     renderHistory();
     initPricing();
     initClerk();
+    initPlaceholders();
 
     // Event listeners
     promptInput.addEventListener('input', () => {
       updateSendButton();
       autoResize();
+      updateCharCount();
     });
 
     promptInput.addEventListener('keydown', (e) => {
@@ -836,6 +1093,19 @@
     sendBtn.addEventListener('click', enhancePrompt);
     copyBtn.addEventListener('click', copyToClipboard);
     newPromptBtn.addEventListener('click', newPrompt);
+
+    // Refinement bar
+    if (refinementSendBtn) {
+      refinementSendBtn.addEventListener('click', refinePrompt);
+    }
+    if (refinementInput) {
+      refinementInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          refinePrompt();
+        }
+      });
+    }
 
     // Theme toggles
     $$('[data-theme-toggle], [data-theme-toggle-mobile]').forEach(el => {
@@ -856,6 +1126,7 @@
 
     // Initial send button state
     updateSendButton();
+    updateCharCount();
 
     // Sidebar pricing button
     const sidebarPricingBtn = $('#sidebarPricingBtn');
