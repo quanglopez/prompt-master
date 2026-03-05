@@ -102,6 +102,8 @@
   const refinementBar = $('#refinementBar');
   const refinementInput = $('#refinementInput');
   const refinementSendBtn = $('#refinementSendBtn');
+  const openChatGPTBtn = $('#openChatGPT');
+  const openGeminiBtn = $('#openGemini');
 
   // ===== TEMPLATES =====
   const templates = [
@@ -437,6 +439,9 @@
               // Show refinement bar
               refinementBar.style.display = 'flex';
 
+              // Show "use" buttons
+              showUseButtons();
+
               // Add to history & increment usage
               addToHistory(prompt, currentEnhancedPrompt, data.tips || []);
               incrementUsage();
@@ -468,6 +473,7 @@
           currentOriginalPrompt = prompt;
           renderTips(parsed.tips);
           refinementBar.style.display = 'flex';
+          showUseButtons();
           addToHistory(prompt, currentEnhancedPrompt, parsed.tips || []);
           incrementUsage();
         } catch {
@@ -475,6 +481,7 @@
           currentEnhancedPrompt = fullText;
           currentOriginalPrompt = prompt;
           refinementBar.style.display = 'flex';
+          showUseButtons();
           addToHistory(prompt, fullText, []);
           incrementUsage();
         }
@@ -640,12 +647,65 @@
           currentEnhancedPrompt = item.enhanced;
           // Show refinement bar
           refinementBar.style.display = 'flex';
+          showUseButtons();
           updateSendButton();
           closeSidebar();
           heroSection.scrollIntoView({ behavior: 'smooth' });
         }
       });
     });
+  }
+
+  // ===== "USE" BUTTONS (ChatGPT / Gemini) =====
+  function showUseButtons() {
+    if (openChatGPTBtn) openChatGPTBtn.style.display = 'flex';
+    if (openGeminiBtn) openGeminiBtn.style.display = 'flex';
+  }
+
+  function hideUseButtons() {
+    if (openChatGPTBtn) openChatGPTBtn.style.display = 'none';
+    if (openGeminiBtn) openGeminiBtn.style.display = 'none';
+  }
+
+  function openInChatGPT() {
+    const text = outputBody.textContent;
+    if (!text) return;
+    const url = 'https://chatgpt.com/?q=' + encodeURIComponent(text);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  function openInGemini() {
+    const text = outputBody.textContent;
+    if (!text) return;
+    const url = 'https://gemini.google.com/app?q=' + encodeURIComponent(text);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  // ===== ZALO FAB DISMISS =====
+  let zaloFabDismissed = false;
+
+  function initZaloFab() {
+    const zaloFabClose = $('#zaloFabClose');
+    const zaloFabWrapper = $('#zaloFabWrapper');
+    if (zaloFabClose && zaloFabWrapper) {
+      zaloFabClose.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        zaloFabWrapper.classList.add('hidden');
+        zaloFabDismissed = true;
+      });
+    }
+  }
+
+  // ===== HISTORY FREE PLAN NOTE =====
+  function updateHistoryFreePlanNote() {
+    const note = $('#historyFreePlanNote');
+    if (!note) return;
+    if (currentPlan === 'free') {
+      note.style.display = 'flex';
+    } else {
+      note.style.display = 'none';
+    }
   }
 
   // ===== COPY =====
@@ -741,6 +801,7 @@
     });
     currentOriginalPrompt = '';
     currentEnhancedPrompt = '';
+    hideUseButtons();
     updateSendButton();
     updateCharCount();
     promptInput.focus();
@@ -977,6 +1038,7 @@
       updateUsageUI();
       updatePlanBadge();
       syncUsageFromBackend();
+      updateHistoryFreePlanNote();
 
       // Broadcast auth data for extension sync
       broadcastAuthForExtension(user);
@@ -1075,6 +1137,8 @@
     initPricing();
     initClerk();
     initPlaceholders();
+    initZaloFab();
+    updateHistoryFreePlanNote();
 
     // Event listeners
     promptInput.addEventListener('input', () => {
@@ -1093,6 +1157,21 @@
     sendBtn.addEventListener('click', enhancePrompt);
     copyBtn.addEventListener('click', copyToClipboard);
     newPromptBtn.addEventListener('click', newPrompt);
+
+    // "Use" buttons
+    if (openChatGPTBtn) openChatGPTBtn.addEventListener('click', openInChatGPT);
+    if (openGeminiBtn) openGeminiBtn.addEventListener('click', openInGemini);
+
+    // History upgrade link
+    const historyUpgradeLink = $('#historyUpgradeLink');
+    if (historyUpgradeLink) {
+      historyUpgradeLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        closeSidebar();
+        const pricing = $('#pricingSection');
+        if (pricing) pricing.scrollIntoView({ behavior: 'smooth' });
+      });
+    }
 
     // Refinement bar
     if (refinementSendBtn) {
