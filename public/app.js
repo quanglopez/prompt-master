@@ -828,14 +828,35 @@
   }
 
   // ===== ROTATING PLACEHOLDERS =====
-  const placeholders = [
+  const placeholdersDesktop = [
     'Ví dụ: Viết cho tôi một bài blog về AI...',
     'Ví dụ: Tạo kế hoạch marketing cho startup...',
     'Ví dụ: Giải thích machine learning đơn giản...',
     'Ví dụ: Viết email xin việc chuyên nghiệp...',
     'Ví dụ: Phân tích dữ liệu bán hàng Q4...',
     'Ví dụ: Viết prompt tạo hình ảnh Midjourney...',
+    'Ví dụ: Soạn bài thuyết trình về AI trong giáo dục...',
+    'Ví dụ: Viết kịch bản video quảng cáo 30 giây...',
+    'Ví dụ: Tạo câu hỏi phỏng vấn cho vị trí developer...',
+    'Ví dụ: Lập kế hoạch content 1 tháng cho fanpage...',
   ];
+  const placeholdersMobile = [
+    'Ví dụ: Viết blog về AI...',
+    'Ví dụ: Kế hoạch marketing...',
+    'Ví dụ: Giải thích ML đơn giản...',
+    'Ví dụ: Viết email xin việc...',
+    'Ví dụ: Phân tích dữ liệu Q4...',
+    'Ví dụ: Prompt cho Midjourney...',
+    'Ví dụ: Bài thuyết trình AI...',
+    'Ví dụ: Kịch bản video 30s...',
+    'Ví dụ: Câu hỏi phỏng vấn...',
+    'Ví dụ: Content plan 1 tháng...',
+  ];
+
+  function getPlaceholders() {
+    return window.innerWidth <= 768 ? placeholdersMobile : placeholdersDesktop;
+  }
+  const placeholders = getPlaceholders();
   let placeholderIdx = 0;
   let placeholderInterval = null;
   let inputFocused = false;
@@ -843,10 +864,11 @@
   function startPlaceholderRotation() {
     placeholderInterval = setInterval(() => {
       if (!inputFocused && !promptInput.value) {
-        placeholderIdx = (placeholderIdx + 1) % placeholders.length;
+        const list = getPlaceholders();
+        placeholderIdx = (placeholderIdx + 1) % list.length;
         promptInput.classList.add('placeholder-fade');
         setTimeout(() => {
-          promptInput.placeholder = placeholders[placeholderIdx];
+          promptInput.placeholder = list[placeholderIdx];
           promptInput.classList.remove('placeholder-fade');
         }, 200);
       }
@@ -854,10 +876,22 @@
   }
 
   function initPlaceholders() {
-    promptInput.placeholder = placeholders[0];
+    // Randomize starting index
+    const list = getPlaceholders();
+    placeholderIdx = Math.floor(Math.random() * list.length);
+    promptInput.placeholder = list[placeholderIdx];
     promptInput.addEventListener('focus', () => { inputFocused = true; });
     promptInput.addEventListener('blur', () => { inputFocused = false; });
     startPlaceholderRotation();
+
+    // Swap placeholder list on resize (desktop ↔ mobile)
+    window.addEventListener('resize', () => {
+      if (!inputFocused && !promptInput.value) {
+        const newList = getPlaceholders();
+        placeholderIdx = placeholderIdx % newList.length;
+        promptInput.placeholder = newList[placeholderIdx];
+      }
+    });
   }
 
   // ===== PAYMENT MODAL =====
